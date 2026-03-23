@@ -17,12 +17,29 @@ class OllamaService:
     def __init__(self):
         self._session = requests.Session()
 
+    def _role_block(self, persona: str) -> str:
+        persona = (persona or "customer_assistant").strip().lower()
+        if persona in {"maintenance", "maintenance_console", "console", "operator"}:
+            return (
+                "Vai trò hiện tại: trợ lý kỹ thuật cho LLM Console bảo trì.\n"
+                "- Ưu tiên sự kiện vận hành, cảnh báo, dữ liệu nội bộ và dữ liệu camera đã được trích xuất sẵn.\n"
+                "- Khi chưa có dữ liệu camera hoặc log, phải nói rõ là chưa có dữ liệu thay vì suy diễn.\n"
+                "- Nếu câu hỏi cần dữ liệu CV nhưng không có tool hoặc dữ liệu tham chiếu, hãy nêu thiếu hụt cụ thể.\n"
+            )
+        return (
+            "Vai trò hiện tại: trợ lý cho khách hàng/người dùng cuối.\n"
+            "- Chỉ trả lời về hướng dẫn sử dụng, an toàn, trạng thái công khai và hỗ trợ chung.\n"
+            "- Không cung cấp dữ liệu camera, danh tính người, person_id, person_name hay lịch sử giám sát.\n"
+            "- Nếu bị hỏi dữ liệu CV, hãy từ chối lịch sự và hướng sang kênh bảo trì.\n"
+        )
+
     def _build_prompt(
         self,
         user_text: str,
         context_blocks: Optional[List[str]] = None,
         memory_summary: str = "",
         intent_hint: str = "general",
+        persona: str = "customer_assistant",
     ) -> str:
         context_blocks = context_blocks or []
         context_text = "\n".join("- {0}".format(item) for item in context_blocks if item)
@@ -32,17 +49,23 @@ class OllamaService:
             "1) Ưu tiên dữ liệu tham chiếu nếu đã được cung cấp.\n"
             "2) Không được bịa thêm sự kiện, số liệu hay quy trình không có trong dữ liệu.\n"
             "3) Nếu thiếu dữ liệu, hãy nói rõ là chưa đủ dữ liệu thay vì đoán.\n"
-            "4) Chỉ hỗ trợ các chủ đề: thang máy, vận hành, bảo trì, an toàn, nhân viên nội bộ liên quan.\n"
-            "5) Với lời chào/cảm ơn, trả lời lịch sự và ngắn gọn.\n"
+            "4) Trả lời ngắn gọn, đúng chuyên môn, bằng tiếng Việt.\n"
+            "5) Nếu là câu chào/cảm ơn, trả lời lịch sự và ngắn gọn.\n"
             "\n"
-            "Tín hiệu ý định: {0}\n"
-            "Tóm tắt hội thoại gần đây: {1}\n"
-            "Dữ liệu tham chiếu:\n{2}\n"
-            "Câu hỏi người dùng: {3}\n"
+            "{0}"
+            "Tín hiệu ý định: {1}\n"
+            "Tóm tắt hội thoại gần đây: {2}\n"
+            "Dữ liệu tham chiếu:\n{3}\n"
+            "Câu hỏi người dùng: {4}\n"
             "\n"
-            "Hãy trả lời bằng tiếng Việt, rõ ràng, tối đa 5 câu. "
-            "Nếu đang dựa trên dữ liệu tham chiếu, bám sát dữ liệu đó."
-        ).format(intent_hint or "general", memory_summary or "chưa có", context_text or "- không có dữ liệu KB", user_text)
+            "Yêu cầu định dạng: trả lời tối đa 6 câu. Nếu đang dựa trên dữ liệu tham chiếu, bám sát dữ liệu đó."
+        ).format(
+            self._role_block(persona),
+            intent_hint or "general",
+            memory_summary or "chưa có",
+            context_text or "- không có dữ liệu KB",
+            user_text,
+        )
 
     def _sanitize_answer(self, answer: str) -> str:
         text = " ".join((answer or "").split())
@@ -56,6 +79,7 @@ class OllamaService:
         context_blocks: Optional[List[str]] = None,
         memory_summary: str = "",
         intent_hint: str = "general",
+        persona: str = "customer_assistant",
         connect_timeout: Optional[int] = None,
         read_timeout: Optional[int] = None,
     ) -> str:
@@ -67,11 +91,12 @@ class OllamaService:
                 context_blocks=context_blocks,
                 memory_summary=memory_summary,
                 intent_hint=intent_hint,
+                persona=persona,
             ),
             "stream": False,
             "options": {
-                "num_predict": 220,
-                "num_ctx": 2048,
+                "num_predict": 260,
+                "num_ctx": 3072,
                 "temperature": 0.2,
                 "top_p": 0.9,
                 "repeat_penalty": 1.1,
@@ -98,12 +123,14 @@ class OllamaService:
         memory_summary: str = "",
         timeout_sec: int = REQUEST_READ_TIMEOUT,
         intent_hint: str = "general",
+        persona: str = "customer_assistant",
     ) -> str:
         return self.generate(
             user_text=user_text,
             context_blocks=context_blocks,
             memory_summary=memory_summary,
             intent_hint=intent_hint,
+            persona=persona,
             read_timeout=timeout_sec,
         )
 
@@ -119,11 +146,15 @@ class OllamaService:
             names = [item.get("name") for item in models if item.get("name")]
             return {
                 "ok": True,
+                "host": OLLAMA_HOST,
+                "model": LLM_MODEL,
                 "model_available": LLM_MODEL in names if names else None,
                 "models": names[:10],
             }
         except Exception as exc:
             return {
                 "ok": False,
+                "host": OLLAMA_HOST,
+                "model": LLM_MODEL,
                 "error": str(exc),
             }

@@ -46,6 +46,18 @@ class DB:
         finally:
             conn.close()
 
+    def settings_snapshot(self) -> Dict[str, object]:
+        return {
+            "host": self.host,
+            "port": self.port,
+            "database": self.database,
+            "user": self.user,
+            "application_name": self.application_name,
+            "sslmode": self.sslmode,
+            "connect_timeout": self.connect_timeout,
+            "statement_timeout_ms": self.statement_timeout_ms,
+        }
+
     def test_connection(self) -> bool:
         return self.test_connection_details().get("ok", False)
 
@@ -53,18 +65,28 @@ class DB:
         try:
             with self.connection() as conn:
                 with conn.cursor() as cur:
-                    cur.execute("SELECT current_database() AS db, current_user AS usr, version() AS version")
+                    cur.execute(
+                        """
+                        SELECT current_database() AS db,
+                               current_user AS usr,
+                               version() AS version,
+                               NOW() AS server_time
+                        """
+                    )
                     row = cur.fetchone() or {}
                     return {
                         "ok": True,
                         "database": row.get("db"),
                         "user": row.get("usr"),
                         "version": row.get("version"),
+                        "server_time": str(row.get("server_time")) if row.get("server_time") else None,
+                        "settings": self.settings_snapshot(),
                     }
         except Exception as exc:
             return {
                 "ok": False,
                 "error": str(exc),
+                "settings": self.settings_snapshot(),
             }
 
 

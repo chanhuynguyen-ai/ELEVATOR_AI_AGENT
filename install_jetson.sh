@@ -10,7 +10,7 @@ python3 -m venv elevator_env38
 source elevator_env38/bin/activate
 
 pip install --upgrade pip setuptools wheel
-pip install -r requirements.txt
+pip install -r requirements_jetson.txt
 
 echo "=== Build native module (ARM64) ==="
 python3 setup.py build_ext --inplace

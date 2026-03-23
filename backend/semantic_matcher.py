@@ -1,8 +1,21 @@
 import os
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from backend.text_utils import normalize_vi
 from config.db_config import db, to_pgvector
+
+
+DOMAIN_KEYWORDS = {
+    "maintenance_cv": (
+        "camera", "cam", "cv", "te nga", "fall", "person_id", "person_name", "nhan dien", "giam sat",
+    ),
+    "elevator_status": (
+        "thang may", "trang thai", "overload", "door", "floor", "tang", "cua",
+    ),
+    "guide": (
+        "huong dan", "cach dung", "faq", "gioi thieu", "su dung",
+    ),
+}
 
 
 class SemanticMatcher:
@@ -101,7 +114,51 @@ class SemanticMatcher:
             )
             return cur.fetchall() or []
 
-    def search(self, user_text: str, user_embedding: Optional[List[float]] = None, top_k: Optional[int] = None) -> List[Dict]:
+    def _infer_query_domain(self, user_norm: str) -> Optional[str]:
+        for domain, keywords in DOMAIN_KEYWORDS.items():
+            if any(keyword in user_norm for keyword in keywords):
+                return domain
+        return None
+
+    def _meta_domain_scope(self, item: Dict) -> Tuple[Optional[str], Optional[str]]:
+        meta = item.get("meta") or {}
+        if not isinstance(meta, dict):
+            return None, None
+        domain = meta.get("domain") or meta.get("query_domain") or meta.get("group")
+        scope = meta.get("scope") or meta.get("audience") or meta.get("role")
+        return (str(domain).lower() if domain else None, str(scope).lower() if scope else None)
+
+    def _rerank_results(self, items: List[Dict], user_norm: str, scope: Optional[str]) -> List[Dict]:
+        requested_domain = self._infer_query_domain(user_norm)
+        normalized_scope = (scope or "").strip().lower() or None
+        reranked = []
+
+        for item in items:
+            score = float(item.get("confidence") or 0.0)
+            domain, item_scope = self._meta_domain_scope(item)
+
+            if requested_domain and domain == requested_domain:
+                score = min(1.0, score + 0.08)
+            if normalized_scope and item_scope == normalized_scope:
+                score = min(1.0, score + 0.05)
+            if requested_domain == "maintenance_cv" and item_scope == "customer":
+                score = max(0.0, score - 0.08)
+
+            reranked.append({**item, "confidence": score})
+
+        return sorted(
+            reranked,
+            key=lambda item: (float(item.get("confidence") or 0.0), int(item.get("prompt_id") or 0)),
+            reverse=True,
+        )
+
+    def search(
+        self,
+        user_text: str,
+        user_embedding: Optional[List[float]] = None,
+        top_k: Optional[int] = None,
+        scope: Optional[str] = None,
+    ) -> List[Dict]:
         user_norm = normalize_vi(user_text)
         top_k = max(1, int(top_k or self.default_top_k))
         if not user_norm and not user_embedding:
@@ -148,16 +205,18 @@ class SemanticMatcher:
         for idx, row in enumerate(vector_hits, start=1):
             merge_item(row, rank=idx, weight=0.90)
 
-        results = sorted(
-            merged.values(),
-            key=lambda item: (float(item.get("confidence") or 0.0), int(item.get("prompt_id") or 0)),
-            reverse=True,
-        )
+        results = self._rerank_results(list(merged.values()), user_norm=user_norm, scope=scope)
         return results[:top_k]
 
-    def match(self, user_embedding: List[float], user_text: str, threshold: Optional[float] = None) -> Optional[Dict]:
+    def match(
+        self,
+        user_embedding: List[float],
+        user_text: str,
+        threshold: Optional[float] = None,
+        scope: Optional[str] = None,
+    ) -> Optional[Dict]:
         target = float(threshold if threshold is not None else self.min_confidence)
-        results = self.search(user_text=user_text, user_embedding=user_embedding, top_k=1)
+        results = self.search(user_text=user_text, user_embedding=user_embedding, top_k=1, scope=scope)
         if results and float(results[0].get("confidence") or 0.0) >= target:
             return results[0]
         return None

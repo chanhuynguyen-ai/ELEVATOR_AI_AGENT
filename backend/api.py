@@ -1,8 +1,8 @@
 from fastapi import FastAPI
 from fastapi.responses import FileResponse, Response, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
-from typing import Optional
+from pydantic import BaseModel, Field
+from typing import Any, Dict, List, Optional
 import os
 import time
 import socket
@@ -12,7 +12,7 @@ from backend.chatbot_engine import ChatbotEngine
 # =========================
 # App & Engine
 # =========================
-app = FastAPI(title="Sunybot Elevator Chatbot", version="1.0.1")
+app = FastAPI(title="Sunybot Elevator Chatbot", version="1.1.0")
 engine = ChatbotEngine()
 
 # =========================
@@ -49,9 +49,6 @@ def _dir_exists(path: str) -> bool:
 
 
 def get_local_ip() -> str:
-    """
-    Lấy IP LAN hiện tại của Jetson để in link truy cập từ máy khác.
-    """
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.connect(("8.8.8.8", 80))
@@ -69,7 +66,8 @@ def print_ui_links(port: int = 8000):
     print(f"Local UI  : http://127.0.0.1:{port}/")
     print(f"LAN UI    : http://{lan_ip}:{port}/")
     print(f"Health    : http://{lan_ip}:{port}/health")
-    print(f"Legacy UI : http://{lan_ip}:{port}/pages/assistant.html")
+    print(f"Customer  : http://{lan_ip}:{port}/pages/assistant.html")
+    print(f"Maint     : http://{lan_ip}:{port}/pages/maintenance.html")
     if _file_exists(DIST_INDEX):
         print("Frontend  : React dist đang được ưu tiên tại /")
     else:
@@ -93,12 +91,9 @@ def startup_debug():
 # =========================
 # Static mounts
 # =========================
-# Old static: /static/...
 if _dir_exists(STATIC_DIR):
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
-# Vite build assets: /assets/...
-# (Vite build thường tham chiếu <script src="/assets/...">)
 if _dir_exists(DIST_ASSETS_DIR):
     app.mount("/assets", StaticFiles(directory=DIST_ASSETS_DIR), name="assets")
 
@@ -108,11 +103,9 @@ if _dir_exists(DIST_ASSETS_DIR):
 # =========================
 @app.get("/favicon.ico", include_in_schema=False)
 def favicon():
-    # Prefer new Vite favicon first
     if _file_exists(DIST_FAVICON):
         return FileResponse(DIST_FAVICON)
 
-    # Fallback to old favicon
     if _file_exists(FAVICON_PATH):
         return FileResponse(FAVICON_PATH)
 
@@ -124,11 +117,6 @@ def favicon():
 # =========================
 @app.get("/", include_in_schema=False)
 def home():
-    """
-    Serve UI:
-    - Prefer Vite/React build at gui/web/dist/index.html
-    - Fallback to old gui/web/index.html
-    """
     if _file_exists(DIST_INDEX):
         return FileResponse(DIST_INDEX)
 
@@ -141,15 +129,7 @@ def home():
 
 @app.get("/pages/{page}", include_in_schema=False)
 def serve_pages(page: str):
-    """
-    Serve old UI pages (legacy mode):
-    /pages/call.html
-    /pages/assistant.html
-    /pages/guide.html
-    /pages/sos.html
-    /pages/maintenance.html
-    """
-    safe_page = os.path.basename(page)  # chống ../
+    safe_page = os.path.basename(page)
     file_path = os.path.join(PAGES_DIR, safe_page)
 
     if not _file_exists(file_path):
@@ -163,27 +143,36 @@ def serve_pages(page: str):
 # =========================
 @app.get("/health")
 def health():
-    return {"status": "ok", "time": time.strftime("%Y-%m-%d %H:%M:%S")}
+    engine_health = engine.healthcheck()
+    return {
+        "status": "ok" if engine_health.get("db_ok") else "degraded",
+        "time": time.strftime("%Y-%m-%d %H:%M:%S"),
+        **engine_health,
+    }
 
 
 # =========================
-# Elevator Status (PHASE 1 - MOCK)
+# Elevator Status
 # =========================
 @app.get("/api/elevator/status")
 def elevator_status():
-    """
-    Mock realtime status.
-    PHASE 2+ sẽ thay bằng dữ liệu thật (PLC/CV)
-    """
+    try:
+        status = engine.get_elevator_status(elevator_id=1)
+        if status:
+            return status
+    except Exception:
+        pass
+
     return {
         "elevator_id": 1,
         "floor": 5,
-        "direction": "UP",          # UP / DOWN / IDLE
-        "door": "CLOSED",           # OPEN / CLOSED / JAM
+        "direction": "UP",
+        "door": "CLOSED",
         "people_count": 4,
         "overload": False,
-        "status": "NORMAL",         # NORMAL / WARNING / ERROR
+        "status": "NORMAL",
         "time": time.strftime("%H:%M:%S"),
+        "source": "mock_fallback",
     }
 
 
@@ -191,7 +180,11 @@ def elevator_status():
 # Chatbot API
 # =========================
 class ChatRequest(BaseModel):
-    message: str
+    message: str = Field(..., min_length=1)
+    session_id: Optional[str] = None
+    scope: str = "customer"
+    persona: Optional[str] = None
+    include_trace: bool = False
 
 
 class ChatResponse(BaseModel):
@@ -199,17 +192,55 @@ class ChatResponse(BaseModel):
     source: str
     intent: Optional[str] = None
     confidence: Optional[float] = None
+    session_id: Optional[str] = None
+    scope: Optional[str] = None
+    persona: Optional[str] = None
+    query_type: Optional[str] = None
+    tool_trace: Optional[List[Dict[str, Any]]] = None
+
+
+def _run_chat(req: ChatRequest, forced_scope: Optional[str] = None, forced_persona: Optional[str] = None) -> Dict[str, Any]:
+    scope = forced_scope or req.scope
+    persona = forced_persona or req.persona
+    result = engine.handle(
+        req.message,
+        session_id=req.session_id,
+        scope=scope,
+        persona=persona,
+    )
+    if not req.include_trace:
+        result = {**result, "tool_trace": None}
+    return {
+        "answer": result.get("answer", ""),
+        "source": result.get("source", "UNKNOWN"),
+        "intent": result.get("intent"),
+        "confidence": result.get("confidence"),
+        "session_id": result.get("session_id"),
+        "scope": result.get("scope"),
+        "persona": result.get("persona"),
+        "query_type": result.get("query_type"),
+        "tool_trace": result.get("tool_trace"),
+    }
 
 
 @app.post("/chat", response_model=ChatResponse)
 def chat(req: ChatRequest):
-    r = engine.handle(req.message)
-    return {
-        "answer": r.get("answer", ""),
-        "source": r.get("source", "UNKNOWN"),
-        "intent": r.get("intent"),
-        "confidence": r.get("confidence"),
-    }
+    return _run_chat(req)
+
+
+@app.post("/api/chat/customer", response_model=ChatResponse)
+def chat_customer(req: ChatRequest):
+    return _run_chat(req, forced_scope="customer", forced_persona="customer_assistant")
+
+
+@app.post("/api/chat/maintenance", response_model=ChatResponse)
+def chat_maintenance(req: ChatRequest):
+    return _run_chat(req, forced_scope="maintenance", forced_persona="maintenance_console")
+
+
+@app.post("/api/knowledge/reload")
+def reload_knowledge():
+    return engine.reload_knowledge()
 
 
 # =========================
@@ -217,21 +248,12 @@ def chat(req: ChatRequest):
 # =========================
 @app.get("/{full_path:path}", include_in_schema=False)
 def spa_fallback(full_path: str):
-    """
-    Nếu dùng React Router / routes client-side, refresh URL sẽ gọi vào đây.
-    - Không đụng các API route và static routes
-    - Nếu có dist/index.html -> trả về SPA
-    - Nếu không -> fallback old index
-    """
-    # Không chặn các route hệ thống / API
     if full_path.startswith(("api", "chat", "health", "static", "assets", "pages")):
         return JSONResponse(status_code=404, content={"error": "Not found"})
 
-    # Prefer React build
     if _file_exists(DIST_INDEX):
         return FileResponse(DIST_INDEX)
 
-    # Fallback old index
     old_index = os.path.join(WEB_DIR, "index.html")
     if _file_exists(old_index):
         return FileResponse(old_index)
