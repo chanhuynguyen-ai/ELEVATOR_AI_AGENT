@@ -67,6 +67,12 @@ curl "http://127.0.0.1:8000/api/integration/data/table?database=elevator_cv&tabl
 ```
 
 SETUP CV:
+
+Bật chế độ hiệu năng tối đa
+```bash
+sudo nvpmodel -m 0
+sudo jetson_clocks
+```
 1) Dọn sạch mọi process đang giữ camera
 ```bash
 pkill -f "python3 main.py"
