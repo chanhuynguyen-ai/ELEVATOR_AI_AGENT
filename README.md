@@ -43,6 +43,18 @@ chạy backend llm:
 python -m uvicorn backend.api:app --host 0.0.0.0 --port 8000
 ```
 
+test backend :
+
+```bash
+curl http://127.0.0.1:8001/api/cv/status
+curl http://127.0.0.1:8001/api/cv/events
+curl "http://127.0.0.1:8001/api/cv/density?days=7"
+
+curl http://127.0.0.1:8000/api/integration/data/catalog
+curl "http://127.0.0.1:8000/api/integration/data/tables?database=elevator_cv"
+curl "http://127.0.0.1:8000/api/integration/data/table?database=elevator_cv&table=camera_events&limit=10"
+curl "http://127.0.0.1:8000/api/integration/data/table?database=elevator_cv&table=camera_occupancy_samples&limit=10"
+```
 
 SETUP CV:
 1) Dọn sạch mọi process đang giữ camera
