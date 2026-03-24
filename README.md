@@ -34,6 +34,9 @@ SETUP BACKEND LLM:
 ```bash
 source ~/venvs/sunybot_jetson/bin/activate
 ```
+```bash
+cd ~/elevator_ai_project
+```
 
 chạy backend llm:
 ```bash
