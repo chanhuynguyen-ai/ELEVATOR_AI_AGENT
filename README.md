@@ -28,7 +28,17 @@ export ELEVATOR_CV_DB_NAME=elevator_cv
 export ELEVATOR_LLM_DB_NAME=elevator_llm
 
 ```
+lệnh test postgresqsl:
 
+```bash
+psql -h 127.0.0.1 -p 5432 -U elevator_ai -d elevator_cv
+```
+```bash
+SELECT COUNT(*) FROM camera_events;
+SELECT COUNT(*) FROM camera_occupancy_samples;
+SELECT COUNT(*) FROM person_registry;
+SELECT COUNT(*) FROM face_embeddings;
+```
 
 SETUP BACKEND LLM:
 ```bash
