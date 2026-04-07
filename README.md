@@ -128,7 +128,8 @@ source .env.cv.example
 ```
 ```bash
 export CAMERA_SOURCE='gst:nvarguscamerasrc sensor-id=0 ! video/x-raw(memory:NVMM),width=1280,height=720,framerate=30/1,format=NV12 ! nvvidconv flip-method=0 ! video/x-raw,format=BGRx ! videoconvert ! video/x-raw,format=BGR ! appsink drop=1 max-buffers=1 sync=false'
-export ENABLE_POSE=false
+export ENABLE_POSE=true
+export ENABLE_FACE=true
 export YOLO_EVERY_N=6
 ```
 

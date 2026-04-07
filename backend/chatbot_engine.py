@@ -11,16 +11,17 @@ from config.db_config import db
 
 
 CAMERA_KEYWORDS = (
-    "camera", "cam", "cv", "nguoi nga", "te nga", "fall", "lying", "nam",
-    "dung", "ngoi", "person_id", "person_name", "cam_id", "giam sat", "nhan dien",
+    "camera", "cam", "cv", "nguoi nga", "té ngã", "te nga", "fall", "lying", "nam",
+    "ngoi", "sitting", "bottle", "crowd", "mat do", "mật độ", "density", "peak hour",
+    "person_id", "person_name", "cam_id", "giam sat", "giám sát", "nhan dien", "nhận diện",
 )
 STATUS_KEYWORDS = (
-    "trang thai", "thang may", "elevator status", "qua tai", "overload", "door",
-    "cua", "tang hien tai", "floor", "status",
+    "trang thai", "trạng thái", "thang may", "thang máy", "elevator status", "qua tai", "quá tải",
+    "overload", "door", "cua", "cửa", "tang hien tai", "tầng hiện tại", "floor", "status",
 )
 GREETING_PATTERNS = (
-    r"^\s*(hi|hello|xin chao|chao|helo|hey)\b",
-    r"^\s*(cam on|thanks|thank you)\b",
+    r"^\s*(hi|hello|xin chao|xin chào|chao|helo|hey)\b",
+    r"^\s*(cam on|cảm ơn|thanks|thank you)\b",
 )
 
 
@@ -46,10 +47,7 @@ class ChatbotEngine:
 
     def reload_knowledge(self) -> Dict[str, Any]:
         self.matcher.load_from_db()
-        return {
-            "ok": True,
-            "matcher_items": self.matcher.item_count,
-        }
+        return {"ok": True, "matcher_items": self.matcher.item_count}
 
     def _normalize_scope(self, scope: Optional[str], persona: Optional[str]) -> str:
         raw = (scope or persona or "customer").strip().lower()
@@ -101,7 +99,7 @@ class ChatbotEngine:
 
     def _handle_empty_message(self, session_id: Optional[str], scope: str, persona: str) -> Dict[str, Any]:
         return self._make_result(
-            "Bạn hãy nhập câu hỏi rõ hơn. Ví dụ: trạng thái thang máy hiện tại hoặc hướng dẫn sử dụng thang máy.",
+            "Bạn hãy nhập câu hỏi rõ hơn. Ví dụ: trạng thái thang máy hiện tại hoặc hôm nay có bao nhiêu lần té ngã.",
             "RULE",
             intent="empty_input",
             confidence=1.0,
@@ -114,7 +112,7 @@ class ChatbotEngine:
     def _handle_greeting(self, session_id: Optional[str], scope: str, persona: str) -> Dict[str, Any]:
         prefix = "Sunybot bảo trì" if scope == "maintenance" else "Sunybot"
         return self._make_result(
-            f"Xin chào, tôi là {prefix}. Bạn cần hỗ trợ về trạng thái thang máy, hướng dẫn sử dụng hay kiểm tra vận hành?",
+            f"Xin chào, tôi là {prefix}. Bạn cần hỗ trợ về trạng thái thang máy, dữ liệu camera hay hướng dẫn sử dụng?",
             "RULE",
             intent="greeting",
             confidence=0.99,
@@ -138,8 +136,12 @@ class ChatbotEngine:
 
     def _handle_status_shortcut(self, session_id: Optional[str], scope: str, persona: str) -> Optional[Dict[str, Any]]:
         try:
-            status = self.get_elevator_status(elevator_id=1) or {}
+            payload = self.get_elevator_status(elevator_id=1) or {}
+            status = payload.get("status_data") if isinstance(payload, dict) else {}
         except Exception:
+            return None
+
+        if not isinstance(status, dict) or not status:
             return None
 
         answer = (
@@ -157,12 +159,39 @@ class ChatbotEngine:
             answer,
             "TOOL:ELEVATOR_STATUS",
             intent="elevator_status",
-            confidence=0.9,
+            confidence=0.92,
             session_id=session_id,
             scope=scope,
             persona=persona,
             query_type="status",
-            tool_trace=[{"tool": "get_elevator_status", "ok": True, "elevator_id": 1}],
+            tool_trace=[{"tool": "get_elevator_status", "ok": True, "elevator_id": 1, "mode": status.get("mode")}],
+        )
+
+    def _handle_maintenance_cv_query(
+        self,
+        user_text: str,
+        session_id: Optional[str],
+        scope: str,
+        persona: str,
+    ) -> Dict[str, Any]:
+        tool_result = self.tool_registry.tool_answer_cv_query(user_text)
+        return self._make_result(
+            tool_result.get("message", "Không có dữ liệu CV phù hợp."),
+            f"TOOL:{tool_result.get('source', 'CV_DB')}",
+            intent="cv_query",
+            confidence=0.95 if tool_result.get("ok") else 0.4,
+            session_id=session_id,
+            scope=scope,
+            persona=persona,
+            query_type="maintenance_cv",
+            tool_trace=[
+                {
+                    "tool": "answer_cv_query",
+                    "ok": bool(tool_result.get("ok")),
+                    "source": tool_result.get("source"),
+                    "preview": (tool_result.get("message") or "")[:180],
+                }
+            ],
         )
 
     def log_chat(self, result: Dict[str, Any], question: str) -> bool:
@@ -225,13 +254,16 @@ class ChatbotEngine:
                 self.log_chat(status_result, user_text)
                 return status_result
 
+        if normalized_scope == "maintenance" and self._looks_like_camera_query(normalized_text):
+            result = self._handle_maintenance_cv_query(user_text, session_id, normalized_scope, normalized_persona)
+            self.log_chat(result, user_text)
+            return result
+
         result = self.agent.run(user_text, session_id=session_id)
         result["session_id"] = result.get("session_id") or session_id
         result["scope"] = normalized_scope
         result["persona"] = normalized_persona
-        result["query_type"] = (
-            "maintenance_cv" if self._looks_like_camera_query(normalized_text) else "general"
-        )
+        result["query_type"] = "general"
         result.setdefault("tool_trace", [])
         self.log_chat(result, user_text)
         return result
@@ -279,4 +311,5 @@ class ChatbotEngine:
             "tools": self.tool_registry.available_tools(),
             "engine_mode": "router_plus_agent",
             "scopes": ["customer", "maintenance"],
+            "cv_db_available": self.tool_registry.cv_db_available,
         }
